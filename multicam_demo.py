@@ -16,7 +16,10 @@ import cv2
 import numpy as np
 import torch
 
+<<<<<<< HEAD
 from boxmot.appearance.reid.auto_backend import ReidAutoBackend
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
 from boxmot.multicam import GlobalIDManager
 from boxmot.qdrant.qdrant_long_reid import _HAVE_QDRANT
 from boxmot.tracker_zoo import create_tracker
@@ -68,6 +71,10 @@ class DemoConfig:
     cam_vertical_gap_px: int = 8 # khoảng hở giữa 2 video (trái)
     map_width_ratio_in_col: float = 0.75  # map = 3/4 bề ngang cột phải
 
+<<<<<<< HEAD
+=======
+
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
 COLORS: List[Tuple[int, int, int]] = [
     (255, 0, 0),
     (0, 255, 0),
@@ -214,7 +221,10 @@ class CameraRuntime:
         conf_thres: float,
         iou_thres: float,
         model,
+<<<<<<< HEAD
         reid_model=None,
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
     ) -> None:
         self.cfg = cfg
         self.projector = projector
@@ -225,7 +235,10 @@ class CameraRuntime:
         self.iou_thres = iou_thres
         self.model = model
         self.device = yolo_device
+<<<<<<< HEAD
         self.reid_model = reid_model
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
 
         self.cap = cv2.VideoCapture(str(cfg.source))
         if not self.cap.isOpened():
@@ -239,7 +252,10 @@ class CameraRuntime:
             reid_weights=reid_weights,
             device=yolo_device,
             camera_id=cfg.tracker_camera_id,
+<<<<<<< HEAD
             reid_model=reid_model,
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
         )
 
     def release(self) -> None:
@@ -401,6 +417,7 @@ def main() -> None:
     tracker_config_path = TRACKER_CONFIGS / f"{demo_cfg.tracker_type}.yaml"
     reid_weights = Path("osnet_x1_0_market1501.pt")
 
+<<<<<<< HEAD
     reid_backend = None
     if demo_cfg.tracker_type == "botsort":
         try:
@@ -413,6 +430,8 @@ def main() -> None:
             print(f"[WARN] Failed to initialize shared ReID backend: {exc}")
             reid_backend = None
 
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
     cameras = [
         CameraRuntime(
             cfg=cfg,
@@ -427,7 +446,10 @@ def main() -> None:
             conf_thres=demo_cfg.conf_thres,
             iou_thres=demo_cfg.iou_thres,
             model=model,
+<<<<<<< HEAD
             reid_model=reid_backend,
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
         )
         for cfg in camera_configs
     ]

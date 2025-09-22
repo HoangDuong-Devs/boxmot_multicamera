@@ -68,7 +68,10 @@ class BotSort(BaseTracker):
         frame_rate          : int   = 30,
         fuse_first_associate: bool  = False,
         with_reid           : bool  = True,
+<<<<<<< HEAD
         reid_model          : object = None,
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
         # Qdrant parameters
         use_qdrant          : bool  = True,
         qdrant_host         : str   = "localhost",
@@ -97,6 +100,7 @@ class BotSort(BaseTracker):
         # ReID module
         self.proximity_thresh  = proximity_thresh
         self.appearance_thresh = appearance_thresh
+<<<<<<< HEAD
         self.with_reid = with_reid
         self.model = None
         if reid_model is not None:
@@ -104,6 +108,10 @@ class BotSort(BaseTracker):
             if self.model is None:
                 self.with_reid = False
         elif self.with_reid and reid_weights is not None:
+=======
+        self.with_reid         = with_reid
+        if self.with_reid and reid_weights is not None:
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
             try:
                 self.model = ReidAutoBackend(
                     weights=reid_weights, device=device, half=half
@@ -113,10 +121,17 @@ class BotSort(BaseTracker):
                 self.with_reid = False
                 self.model = None
         else:
+<<<<<<< HEAD
             if self.with_reid:
                 print("Warning: with_reid=True but no ReID backend provided, disabling ReID")
             self.with_reid = False
             self.model = None
+=======
+            self.model = None
+            if with_reid and reid_weights is None:
+                print("Warning: with_reid=True but reid_weights=None, disabling ReID")
+                self.with_reid = False
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
         
         self.cmc = get_cmc_method(cmc_method)()
         self.fuse_first_associate = fuse_first_associate    

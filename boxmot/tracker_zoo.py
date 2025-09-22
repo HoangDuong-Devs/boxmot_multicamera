@@ -22,7 +22,10 @@ def create_tracker(
     per_class=None,
     evolve_param_dict=None,
     camera_id=None,
+<<<<<<< HEAD
     reid_model=None,
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
 ):
     """
     Creates and returns an instance of the specified tracker type.
@@ -59,7 +62,10 @@ def create_tracker(
         "reid_weights": reid_weights,
         "device": device,
         "half": half,
+<<<<<<< HEAD
         "reid_model": reid_model,
+=======
+>>>>>>> c2a1bffe272122feb07939a728916a0229b81f25
     }
 
     # Map tracker types to their corresponding classes
