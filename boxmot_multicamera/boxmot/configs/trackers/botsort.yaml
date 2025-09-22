@@ -1,0 +1,39 @@
+track_high_thresh: # Ngưỡng confidence tối thiểu để một detection được coi là đủ “tốt” để ghép với các track đang hoạt động (confirmed track).
+  type: uniform
+  default: 0.4  # 0.6
+  range: [0.3, 0.7]
+
+track_low_thresh: # Ngưỡng confidence thấp hơn, dùng để cân nhắc match với track “đã mất” hoặc “đang chờ xác nhận”.
+  type: uniform
+  default: 0.1  # 0.1
+  range: [0.1, 0.3]
+
+new_track_thresh:  # Ngưỡng confidence để quyết định có khởi tạo một track mới hay không.
+  type: uniform
+  default: 0.7  # 0.7
+  range: [0.1, 0.8]
+
+track_buffer:  # Số lượng frame tối đa mà một track có thể bị “mất” (Lost) trước khi bị loại hoàn toàn.
+  type: randint
+  default: 3000  # 30
+  range: [20, 81]
+
+match_thresh:   
+  type: uniform
+  default: 0.7  # 0.8
+  range: [0.1, 0.9]
+
+proximity_thresh: 
+  type: uniform
+  default: 0.5  # 0.5
+  range: [0.25, 0.75]
+
+appearance_thresh:  # Ngưỡng cosine similarity tối thiểu để chấp nhận ghép hai đối tượng dựa vào đặc trưng ảnh (ReID feature).
+  type: uniform
+  default: 0.2  # 0.25
+  range: [0.1, 0.8]
+
+cmc_method: # Phương pháp tính “cost” giữa track và detection khi dùng đặc trưng ReID.
+  type: choice
+  default: ecc  # ecc
+  options: [sof, ecc]
