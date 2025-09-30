@@ -85,9 +85,13 @@ def create_tracker(
         "botsort",
     ]:
         tracker_args["per_class"] = per_class
-        tracker_args.update(reid_args)
-        if camera_id is not None:
-            tracker_args["camera_id"] = camera_id
+        # Only pass reid_weights, device, and half to BotSort (not reid_model or camera_id)
+        tracker_args.update({
+            "reid_weights": reid_weights,
+            "device": device,
+            "half": half,
+        })
+        # Note: BotSort doesn't accept camera_id parameter
     else:
         tracker_args["per_class"] = per_class
 

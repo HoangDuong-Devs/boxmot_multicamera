@@ -156,7 +156,6 @@ def visualize_tracks(
 
     return vis
 
-
 def draw_on_map(
     canvas: np.ndarray,
     projector: Optional[HomographyProjector],
