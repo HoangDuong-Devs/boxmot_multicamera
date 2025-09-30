@@ -15,8 +15,8 @@ new_track_thresh:  # Ngưỡng confidence để quyết định có khởi tạo
 
 track_buffer:  # Số lượng frame tối đa mà một track có thể bị “mất” (Lost) trước khi bị loại hoàn toàn.
   type: randint
-  default: 3000  # 30
-  range: [20, 81]
+  default: 90  # 30
+  range: [20, 360]
 
 match_thresh:   
   type: uniform

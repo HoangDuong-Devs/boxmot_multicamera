@@ -64,7 +64,7 @@ def create_tracker(
 
     # Map tracker types to their corresponding classes
     tracker_mapping = {
-        "botsort"   : "boxmot.trackers.botsort.botsort_pending_idsd2.BotSort",
+        "botsort"   : "boxmot.trackers.botsort.botsort.BotSort",
     }
 
     # Check if the tracker type exists in the mapping
