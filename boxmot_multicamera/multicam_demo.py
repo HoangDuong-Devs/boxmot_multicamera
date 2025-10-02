@@ -91,9 +91,15 @@ COLORS: List[Tuple[int, int, int]] = [
     (173, 216, 230),
 ]
 
+VIZ_SCALE = 1.25
+
+def _scaled(val: float, minv: int = 1) -> int:
+    return max(minv, int(round(val * VIZ_SCALE)))
+
 def put_text(img: np.ndarray, text: str, org: Tuple[int, int], color: Tuple[int, int, int]) -> None:
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
-    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 1, cv2.LINE_AA)
+    fs = 0.6 * VIZ_SCALE                     # trước đây: 0.6
+    th = _scaled(1)                           # trước đây: 1
+    cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX, fs, color, th, cv2.LINE_AA)
 
 def visualize_tracks(
     frame: np.ndarray,
@@ -148,10 +154,11 @@ def visualize_tracks(
     (xw, xh), base = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, fs, th)
     x0, y0 = 10, 10
     x1, y1 = x0 + xw + 10, y0 + xh + base + 10
+    # Draw a translucent background for the camera label but use single-color text
     overlay = vis.copy()
     cv2.rectangle(overlay, (x0, y0), (x1, y1), (0, 0, 0), -1, cv2.LINE_AA)
     cv2.addWeighted(overlay, 0.6, vis, 0.4, 0, vis)
-    cv2.putText(vis, label, (x0 + 5, y0 + xh), cv2.FONT_HERSHEY_SIMPLEX, fs, (0, 0, 0), th + 2, cv2.LINE_AA)
+    # Draw label text in white without a thick black stroke
     cv2.putText(vis, label, (x0 + 5, y0 + xh), cv2.FONT_HERSHEY_SIMPLEX, fs, (255, 255, 255), th, cv2.LINE_AA)
 
     return vis
@@ -398,7 +405,7 @@ def main() -> None:
         projectors[cfg.tracker_camera_id] = projector
 
     tracker_config_path = TRACKER_CONFIGS / f"{demo_cfg.tracker_type}.yaml"
-    reid_weights = Path("osnet_x1_0_market1501.pt")
+    reid_weights = Path("osnet_x1_0_msmt17.pt")
 
     reid_backend = None
     if demo_cfg.tracker_type == "botsort":

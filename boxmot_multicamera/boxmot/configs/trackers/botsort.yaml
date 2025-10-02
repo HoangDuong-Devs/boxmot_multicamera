@@ -1,11 +1,11 @@
 track_high_thresh: # Ngưỡng confidence tối thiểu để một detection được coi là đủ “tốt” để ghép với các track đang hoạt động (confirmed track).
   type: uniform
-  default: 0.4  # 0.6
+  default: 0.6  # 0.6
   range: [0.3, 0.7]
 
 track_low_thresh: # Ngưỡng confidence thấp hơn, dùng để cân nhắc match với track “đã mất” hoặc “đang chờ xác nhận”.
   type: uniform
-  default: 0.1  # 0.1
+  default: 0.3  # 0.1
   range: [0.1, 0.3]
 
 new_track_thresh:  # Ngưỡng confidence để quyết định có khởi tạo một track mới hay không.
@@ -20,7 +20,7 @@ track_buffer:  # Số lượng frame tối đa mà một track có thể bị �
 
 match_thresh:   
   type: uniform
-  default: 0.7  # 0.8
+  default: 0.8  # 0.8
   range: [0.1, 0.9]
 
 proximity_thresh: 

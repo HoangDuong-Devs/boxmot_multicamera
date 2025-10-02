@@ -313,19 +313,32 @@ class BotSort(BaseTracker):
     def allow_update(self, long_val, track):
         long_th = float(getattr(self, "long_update_cos_thresh", 0.15))
         occ_th  = float(getattr(self, "occlusion_overlap_thresh", 0.45))
+        long_min_th = 0.03  # below this, do NOT update long reid
 
-        long_ok = True if long_val is None else (long_val <= long_th)
+        # If long_val is not None and too small, do not allow long update (avoid ID noise)
+        if long_val is not None and long_val < long_min_th:
+            long_ok = False
+        else:
+            long_ok = True if long_val is None else (long_val <= long_th)
 
-        occluded = False  # <-- thêm dòng này
+        # Kiểm tra che khuất
+        occluded = False
         try:
             info = self.overlap_calc.get_result(track)
             occluded = bool(info.get("is_occluded", False))
         except Exception:
             occluded = False
 
-        allow_short = True
-        allow_long  = bool(allow_short and long_ok and (not occluded))
-        return allow_short, allow_long, occluded
+        # Tính trọng số cập nhật cho short features
+        base_weight = getattr(track, "update_ratio", 0.1)
+        # Giảm một nửa trọng số khi có che khuất hoặc drift đặc trưng
+        if occluded or (long_val is not None and long_val > long_th):
+            short_weight = base_weight * 0.5
+        else:
+            short_weight = base_weight
+
+        allow_long = bool(long_ok and (not occluded))
+        return short_weight, allow_long, occluded
 
     def _occlusion_context(self, exclude_id=None, predict_pending=False):
         """Lấy danh sách đối tượng có thể gây che khuất: active (Tracked) + pending."""
@@ -355,19 +368,16 @@ class BotSort(BaseTracker):
         return ctx
     
     def _update_coexistence_simple(self, tracks):
-        """Optimized coexistence tracking."""
+        """Record all pairs of IDs that coexist in current frame."""
         try:
-            # Filter once instead of in loop
             live = [t for t in tracks if t.state == TrackState.Tracked]
             live_ids = [int(t.id) for t in live]
             n = len(live_ids)
-            
-            # Pre-allocate sets
+
             for ida in live_ids:
                 if ida not in self.coex_map:
                     self.coex_map[ida] = set()
-            
-            # Single loop for all pairs
+
             for i in range(n):
                 ida = live_ids[i]
                 for j in range(i + 1, n):
@@ -377,22 +387,10 @@ class BotSort(BaseTracker):
                         self.coex_map[idb].add(ida)
         except Exception as e:
             print(f"Error in coexistence update: {e}")
-                
+
     def _purge_from_coex(self, ids):
-        """Remove all traces of given ids from coexistence map."""
-        if ids is None:
-            return
-        try:
-            for tid in list(ids):
-                tid = int(tid)
-                peers = self.coex_map.pop(tid, None)
-                if peers:
-                    for p in list(peers):
-                        s = self.coex_map.get(int(p))
-                        if s is not None:
-                            s.discard(tid)
-        except Exception as e:
-            print(f"Error purging coexistence: {e}")
+        """Coexistence tracking disabled."""
+        return
     
     def _bank_vectors_for_track(self, track):
         """Lấy toàn bộ vectors V (N_i, D) từ bank cho track.id, có cache ngắn theo frame."""
@@ -636,11 +634,11 @@ class BotSort(BaseTracker):
                         self._bank_add_feature(new_track, feat_for_strack)
                         continue
 
-                    # ID Fragment Resolution
-                    canonical_id, merge_ids = self.pending_manager.resolve_id_fragments(
+                    # Choose best candidate (no merge logic)
+                    canonical_id, _ = self.pending_manager.resolve_id_fragments(
                         cand_ids, lost_map, p_track, self.frame_count
                     )
-                
+
                     if canonical_id is None:
                         # Cannot resolve - create new track
                         feat_for_strack = (
@@ -656,22 +654,10 @@ class BotSort(BaseTracker):
                         self._bank_add_feature(new_track, feat_for_strack)
                         continue
 
-                    # 3. Coexistence filtering for canonical_id
-                    coex = self.coex_map
-                    coex_set = coex.get(int(canonical_id), set())
-                    
-                    # chỉ lọc các merge_ids bị xung đột với canonical
-                    safe_merge_ids   = [mid for mid in merge_ids if mid not in coex_set]
-                    conflict_ids     = [mid for mid in merge_ids if mid in coex_set]
-
-                    # luôn re-activate canonical_id
-                    root_trk = lost_map[canonical_id]
+                    # Reactivate best lost track
+                    root_trk = lost_map.pop(canonical_id)
                     root_trk.re_activate(p_track, self.frame_count, new_id=False, img=img)
                     refind_stracks.append(root_trk)
-                    del lost_map[canonical_id]
-
-                    # (tuỳ chọn) log cho dễ debug
-                    print(f"[PROMOTE] canonical={canonical_id}, merge={safe_merge_ids}, filtered_by_coex={conflict_ids}")
 
                     # --- push 1 vector vào bank như cũ ---
                     try:
@@ -686,39 +672,6 @@ class BotSort(BaseTracker):
                                 self._bank_add_feature(root_trk, feat_for_bank)
                     except Exception as e:
                         print(f"[LongBank] post-reactivate push failed for id={getattr(root_trk,'id',-1)}: {e}")
-
-                    # chỉ merge các ID không xung đột
-                    for merge_id in safe_merge_ids:
-                        if merge_id in lost_map:
-                            merge_track = lost_map[merge_id]
-                            # merge feature histories (như code cũ)
-                            merge_long     = getattr(merge_track, "long_feat_mean", None)
-                            canonical_long = getattr(root_trk,  "long_feat_mean", None)
-                            if merge_long is not None:
-                                if canonical_long is None:
-                                    root_trk.long_feat_mean = merge_long.copy()
-                                else:
-                                    weight = 0.3
-                                    root_trk.long_feat_mean = (1 - weight) * canonical_long + weight * merge_long
-                                    nrm = np.linalg.norm(root_trk.long_feat_mean)
-                                    if nrm > 1e-6:
-                                        root_trk.long_feat_mean /= nrm
-
-                            self.lost_stracks = [t for t in self.lost_stracks if t.id != merge_id]
-                            del lost_map[merge_id]
-                            self._purge_from_coex([merge_id])
-                            
-                            if self.long_bank is not None:
-                                try:
-                                    self.long_bank.delete_track(self.run_uid, int(merge_id))
-                                except Exception as e:
-                                    print(f"[LongBank] delete merge id = {merge_id} failed: {e}")
-                                
-                            # dọn cache cục bộ
-                            self._slot_pos.pop(int(merge_id), None)
-                            self._bank_proto_cache.pop(int(merge_id), None)
-                            self._frame_cache_bank.pop(int(merge_id), None)
-                                
                 except Exception as e:
                     print(f"Error promoting pending track: {e}")
                     continue
@@ -861,7 +814,7 @@ class BotSort(BaseTracker):
             track.final_cost     = float(C[itracked, idet])
                  
             # Check update permissions
-            allow_short, allow_long, occluded = self.allow_update(
+            short_weight, allow_long, occluded = self.allow_update(
                 long_cost[itracked, idet] if self.with_reid else None,
                 track,
             )
@@ -871,15 +824,17 @@ class BotSort(BaseTracker):
             if track.state == TrackState.Tracked:
                 track.update(
                     det, self.frame_count, img,
-                    allow_feat=allow_short,     
-                    allow_long=allow_long
+                    allow_feat=True,     
+                    allow_long=allow_long,
+                    weight_override=short_weight
                 )
                 activated_stracks.append(track)
             else:
                 track.re_activate(
                     det, self.frame_count, new_id=False, img=img,
-                    allow_feat=allow_short,
-                    allow_long=allow_long
+                    allow_feat=True,
+                    allow_long=allow_long,
+                    weight_override=short_weight
                 )
                 refind_stracks.append(track)
 

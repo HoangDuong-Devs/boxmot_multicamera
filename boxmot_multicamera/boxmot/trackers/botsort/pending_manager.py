@@ -54,7 +54,7 @@ class PendingTrack(BaseTrack):
         self.start_frame  = frame_id
         self.is_activated = False
         
-        self.promotion_deadline          = promotion_deadline
+        self.promotion_deadline = promotion_deadline
         
         # Feature handling
         self.curr_feat   = None
@@ -707,32 +707,31 @@ class PendingManager:
             return np.zeros((len(boxes1), len(boxes2)), dtype=np.float32)
         
     def resolve_id_fragments(self, cand_ids, lost_map, pending_track, frame_id):
-        """
-        Quyết định canonical/merge chỉ theo điều kiện: 
-        - mỗi ID phải đạt >= need_frames trong cand_lost của pending
-        - canonical = ID nhỏ nhất
-        - merge_ids = còn lại
-        (KHÔNG xử lý coexistence ở đây; BotSort sẽ dùng coex_map để chặn sau)
-        """
+        """Select the best lost track candidate for the pending track."""
         try:
-            if len(cand_ids) == 1:
-                return cand_ids[0], []
-
+            best_id = None
+            best_cost = float("inf")
+            best_frames = -1
             need_frames = int(getattr(self, "promote_min_frames_for_lost", 5))
-            elig = []
+
             for lid in cand_ids:
+                if lid not in lost_map:
+                    continue
                 st = (pending_track.cand_lost or {}).get(lid)
-                if st and int(st.get("frames", 0)) >= need_frames and lid in lost_map:
-                    elig.append(lid)
+                if not st:
+                    continue
+                frames = int(st.get("frames", 0))
+                if frames < need_frames:
+                    continue
+                cost = float(st.get("best", 1.0))
+                if (cost < best_cost) or (abs(cost - best_cost) < 1e-6 and frames > best_frames):
+                    best_cost = cost
+                    best_frames = frames
+                    best_id = lid
 
-            if not elig:
-                return None, []
-
-            canonical_id = min(elig)
-            merge_ids = [lid for lid in elig if lid != canonical_id]
-            return canonical_id, merge_ids
+            return best_id, []
         except Exception as e:
-            print(f"Error resolving ID fragments (min-ID only): {e}")
+            print(f"Error selecting pending candidate: {e}")
             return None, []
         
     def _summarize_cand_lost(self, p):

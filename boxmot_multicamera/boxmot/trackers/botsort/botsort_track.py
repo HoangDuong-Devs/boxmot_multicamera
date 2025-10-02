@@ -102,15 +102,17 @@ class STrack(BaseTrack):
         """Update both short and long-term features (legacy method)."""
         self.update_features_split(feat, img=img, allow_long=True)
     
-    def _update_short_features(self, feat, img=None):
-        """Always update short-term features."""
+    def _update_short_features(self, feat, img=None, weight_override=None):
+        """Always update short-term features with optional weight override."""
         try:
             eps = 1e-12
             f = feat.astype(np.float32, copy=False)
             f /= (np.linalg.norm(f) + eps)
             
             self.curr_feat = f
-            beta = getattr(self, "update_ratio", 0.1)
+            # Sử dụng trọng số override nếu có, nếu không dùng trọng số mặc định
+            beta = weight_override if weight_override is not None else getattr(self, "update_ratio", 0.1)
+            
             if self.smooth_feat is None:
                 self.smooth_feat = f.copy()
             else:   
@@ -157,10 +159,10 @@ class STrack(BaseTrack):
         except Exception as e:
             print(f"Error updating long features: {e}")
     
-    def update_features_split(self, feat, img=None, allow_long=True):
+    def update_features_split(self, feat, img=None, allow_long=True, weight_override=None):
         if feat is None:
             return
-        self._update_short_features(feat, img=img)
+        self._update_short_features(feat, img=img, weight_override=weight_override)
         if allow_long:
             # cho phép long theo stride để tránh spam
             if not hasattr(self, "frame_id") or (self.frame_id % getattr(self, "long_stride", 2) == 0):
@@ -279,7 +281,7 @@ class STrack(BaseTrack):
         except Exception as e:
             print(f"Error activating track: {e}")
 
-    def re_activate(self, new_track, frame_id, new_id=False, img=None, allow_feat=True, allow_long=True):
+    def re_activate(self, new_track, frame_id, new_id=False, img=None, allow_feat=True, allow_long=True, weight_override=None):
         """Re-activate a track with a new detection."""
         try:
             if self.mean is not None and self.covariance is not None and self.kalman_filter is not None:
@@ -308,7 +310,7 @@ class STrack(BaseTrack):
                 
             # Update features if allowed
             if allow_feat and getattr(new_track, "curr_feat", None) is not None:
-                self.update_features_split(new_track.curr_feat, img=img, allow_long=allow_long)
+                self.update_features_split(new_track.curr_feat, img=img, allow_long=allow_long, weight_override=weight_override)
                 
             self.conf = getattr(new_track, 'conf', 1.0)
             self.cls = getattr(new_track, 'cls', 0)
@@ -319,7 +321,7 @@ class STrack(BaseTrack):
         except Exception as e:
             print(f"Error re-activating track: {e}")
 
-    def update(self, new_track, frame_id, img=None, allow_feat=True, allow_long=True):
+    def update(self, new_track, frame_id, img=None, allow_feat=True, allow_long=True, weight_override=None):
         """Update the current track with a matched detection."""
         try:
             self.frame_id = frame_id
@@ -332,7 +334,7 @@ class STrack(BaseTrack):
                 )
 
             if allow_feat and getattr(new_track, "curr_feat", None) is not None:
-                self.update_features_split(new_track.curr_feat, img=img, allow_long=allow_long)
+                self.update_features_split(new_track.curr_feat, img=img, allow_long=allow_long, weight_override=weight_override)
                 
             self.state = TrackState.Tracked
             self.is_activated = True

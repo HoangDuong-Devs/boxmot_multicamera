@@ -12,7 +12,6 @@ import time
 from boxmot.tracker_zoo import create_tracker
 from boxmot.utils import TRACKER_CONFIGS
 from boxmot.multicam import GlobalIDManager
-from boxmot.utils.homography_mapper import HomographyProjector
 
 # Add YOLOv7 repo to path so its utils can be imported
 YOLOV7_ROOT = Path(__file__).parent / "yolov7"
@@ -22,15 +21,14 @@ from yolov7.utils.datasets      import letterbox
 from yolov7.models.experimental import attempt_load
 from yolov7.utils.general       import non_max_suppression, scale_coords
 
-from qdrant_client import QdrantClient
-
 def clear_qdrant_collection(name="long_term_reid"):
     try:
+        from qdrant_client import QdrantClient
         client = QdrantClient(host="localhost", port=6333)
         client.delete_collection(name)
         print(f"[INFO] Qdrant collection '{name}' deleted successfully.")
     except Exception as e:
-        print("f[WARN] could not delete collection '{name}: {e}")
+        print(f"[WARN] could not delete collection '{name}': {e}")
 
 @dataclass
 class TrackingConfig:
@@ -39,22 +37,13 @@ class TrackingConfig:
     detect_class: int   = 2
     tracker_type: str   = "botsort"
     device      : str   = "0"
-    conf_thres  : float = 0.5
-    iou_thres   : float = 0.6
+    conf_thres  : float = 0.55
+    iou_thres   : float = 0.7
     output      : str   = "aicity3.avi"
     img_size    : int   = 640
     half        : bool  = False
     per_class   : bool  = False
     camera_id   : str   = "cam0"
-    map_image   : Optional[str] = None
-    homography_matrix_path: Optional[str] = None
-    homography_matrix     : Optional[List[List[float]]] = None
-    calibration_json      : Optional[str] = None
-    calibration_camera    : Optional[str] = None
-    map_rotation_deg      : float = 0.0
-    map_flip_x            : bool = False
-    map_flip_y            : bool = False
-    map_panel_width       : int   = 420
 
 def put_text_styled(img, text, org, color, scale=0.6, thickness=1):
     cv2.putText(img, text, org, cv2.FONT_HERSHEY_SIMPLEX,
@@ -187,53 +176,6 @@ def visualize_full_hd(video_frame, tracks, rows=6, cols=5, padding=5, text_heigh
     final_display[:, video_w:] = grid_panel
     return final_display
 
-
-def draw_map_overlay(
-    projector: Optional[HomographyProjector],
-    boxes: List[np.ndarray],
-    local_ids: List[int],
-    global_ids: List[Optional[int]],
-    colors: List[tuple],
-) -> Optional[np.ndarray]:
-    if projector is None:
-        return None
-
-    canvas = projector.base_map.copy()
-    if not boxes:
-        return canvas
-
-    pts = projector.project_bboxes(boxes)
-    map_w, map_h = projector.size
-
-    for (x, y), lid, gid in zip(pts, local_ids, global_ids):
-        if not np.isfinite(x) or not np.isfinite(y):
-            continue
-        xi, yi = int(round(x)), int(round(y))
-        inside = 0 <= xi < map_w and 0 <= yi < map_h
-        label = None
-        if inside:
-            label = f"G{gid}" if gid is not None else f"L{lid}"
-        else:
-            label = f"L{lid}"
-            # Clip to border so off-map tracks can still be hinted
-            xi = min(max(xi, 0), map_w - 1)
-            yi = min(max(yi, 0), map_h - 1)
-
-        color = colors[lid % len(colors)] if colors else (0, 215, 255)
-        cv2.circle(canvas, (xi, yi), 6, color, -1, lineType=cv2.LINE_AA)
-        cv2.putText(
-            canvas,
-            label,
-            (xi + 8, yi - 8),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (255, 255, 255),
-            2,
-            cv2.LINE_AA,
-        )
-
-    return canvas
-
 def run_tracking(cfg: TrackingConfig) -> None:
     selected_device = torch.device("cuda:0")
     clear_qdrant_collection("long_term_reid")
@@ -249,38 +191,22 @@ def run_tracking(cfg: TrackingConfig) -> None:
         tracker_config=TRACKER_CONFIGS / f"{cfg.tracker_type}.yaml",
         half          =cfg.half,
         per_class     =cfg.per_class,
-        reid_weights  =Path("osnet_x1_0_market1501.pt"),
+        reid_weights  =Path("osnet_x1_0_msmt17.pt"),
         device        =selected_device,
         camera_id     =cfg.camera_id,
     )
 
-    global_id_manager = GlobalIDManager()
-
-    projector = None
-    if cfg.map_image:
-        try:
-            if cfg.homography_matrix is not None:
-                H = np.asarray(cfg.homography_matrix, dtype=np.float64)
-                projector = HomographyProjector(Path(cfg.map_image), H)
-            else:
-                projector = HomographyProjector.from_sources(
-                    map_image=Path(cfg.map_image),
-                    matrix_path=Path(cfg.homography_matrix_path)
-                    if cfg.homography_matrix_path
-                    else None,
-                    calibration_path=Path(cfg.calibration_json)
-                    if cfg.calibration_json
-                    else None,
-                    calibration_camera=(cfg.calibration_camera or cfg.camera_id)
-                    if cfg.calibration_json
-                    else None,
-                    rotation_deg=cfg.map_rotation_deg,
-                    flip_x=cfg.map_flip_x,
-                    flip_y=cfg.map_flip_y,
-                )
-        except Exception as e:
-            print(f"[WARN] Failed to initialize homography projector: {e}")
-            projector = None
+    global_id_manager = GlobalIDManager(
+        cost_threshold=0.1,            # Cost threshold (0.0-1.0, lower = more strict)
+        cost_margin=0.05,              # Cost margin for ambiguous matches
+        historical_cost_threshold=0.4, # Historical cost threshold (looser than current)
+        # Extended timeouts
+        lost_timeout_seconds=600,      # Tăng từ 300s (5min) lên 600s (10min)
+        inactive_timeout_seconds=7200, # Tăng từ 3600s (1h) lên 7200s (2h)
+        # Enable Qdrant for historical evidence
+        use_qdrant=True,
+        qdrant_collection="real_tracking_session"
+    )
 
     cap = cv2.VideoCapture(cfg.source)
     if not cap.isOpened():
@@ -336,20 +262,29 @@ def run_tracking(cfg: TrackingConfig) -> None:
             pred = model(img_tensor, augment=False)[0]
             det = non_max_suppression(pred, conf_thres=cfg.conf_thres, iou_thres=cfg.iou_thres)[0]
 
-        map_overlay_panel = None
-
         if det is not None and len(det):
             det[:, :4] = scale_coords(img_tensor.shape[2:], det[:, :4], frame.shape, ratio_pad=(ratio, pad)).round()
             det = det[det[:, 5] == 2]  # Filter class (person)
             if len(det):
                 outputs, logs, tracks_for_visual, pending_tracks = tracker.update(det.cpu().numpy(), frame)
+                
+                # Collect existing track IDs from tracker (active + lost)
+                active_tracks = getattr(tracker, "active_tracks", [])
+                lost_tracks = getattr(tracker, "lost_stracks", [])
+                
+                existing_track_ids = set()
+                for trk in active_tracks:
+                    tid = getattr(trk, "id", None)
+                    if tid is not None:
+                        existing_track_ids.add(int(tid))
+                for trk in lost_tracks:
+                    tid = getattr(trk, "id", None)
+                    if tid is not None:
+                        existing_track_ids.add(int(tid))
 
                 global_id_map: dict[int, int] = {}
-                map_boxes: List[np.ndarray] = []
-                map_local_ids: List[int] = []
-                map_global_ids: List[Optional[int]] = []
-                active_tracks = getattr(tracker, "active_tracks", [])
                 frame_stamp = getattr(tracker, "frame_count", frame_idx)
+                
                 for trk in active_tracks:
                     if not getattr(trk, "is_activated", False):
                         continue
@@ -358,16 +293,38 @@ def run_tracking(cfg: TrackingConfig) -> None:
                     if tid is None or xy is None:
                         continue
                     tid_int = int(tid)
+                    
+                    # Get current feature for assignment
+                    feature = getattr(trk, "curr_feat", None)
+                    
+                    # Pass existing_track_ids so GlobalIDManager can detect removed tracks
                     gid = global_id_manager.assign(
                         cfg.camera_id,
                         tid_int,
-                        feature=getattr(trk, "curr_feat", None),
+                        feature=feature,
                         timestamp=frame_stamp,
+                        existing_track_ids=existing_track_ids,  # NEW: sync tracker state
                     )
+                    
+                    # Debug logging for reuse detection
+                    assignment_info = global_id_manager.get_assignment_info(cfg.camera_id, tid_int)
+                    if assignment_info:
+                        match_type = assignment_info.get('match_type', 'unknown')
+                        similarity = assignment_info.get('similarity', 0.0)
+                        cost = 1.0 - similarity  # Convert to cost for display
+                        
+                        # Only log important events (not existing_assignment)
+                        if match_type in ['lost_reactivation', 'inactive_reactivation']:
+                            print(f"🔄 GLOBAL ID REUSE: Track {tid_int} -> Global {gid}")
+                            print(f"   Match type: {match_type}, Cost: {cost:.3f} (sim: {similarity:.3f})")
+                        elif match_type in ['cross_camera_match', 'historical_match']:
+                            print(f"� CROSS-CAMERA MATCH: Track {tid_int} -> Global {gid}")
+                            print(f"   Match type: {match_type}, Cost: {cost:.3f} (sim: {similarity:.3f})")
+                        elif match_type == 'new_entity' and gid != tid_int:
+                            print(f"🆕 NEW GLOBAL ID: Track {tid_int} -> Global {gid}")
+                        # Skip logging for 'existing_assignment' (too verbose)
+                    
                     global_id_map[tid_int] = gid
-                    map_boxes.append(np.asarray(xy, dtype=np.float32))
-                    map_local_ids.append(tid_int)
-                    map_global_ids.append(gid)
 
                 logs_dict = {log["track_id"]: log for log in logs}
                 full_logs = []
@@ -402,50 +359,10 @@ def run_tracking(cfg: TrackingConfig) -> None:
                 tracks_for_visual.sort(key=lambda t: t["id"])
 
                 display_frame = visualize_full_hd(frame_with_logs, tracks_for_visual)
-                map_overlay_panel = draw_map_overlay(
-                    projector, map_boxes, map_local_ids, map_global_ids, colors
-                )
             else:
                 display_frame = visualize_full_hd(frame, [])
-                map_overlay_panel = draw_map_overlay(projector, [], [], [], colors)
         else:
             display_frame = visualize_full_hd(frame, [])
-            map_overlay_panel = draw_map_overlay(projector, [], [], [], colors)
-
-        if map_overlay_panel is None and projector is not None:
-            map_overlay_panel = projector.base_map.copy()
-
-        if map_overlay_panel is not None and cfg.map_panel_width > 0:
-            panel   = map_overlay_panel
-            panel_h = int(cfg.map_panel_width * panel.shape[0] / max(panel.shape[1], 1))
-            panel_w = int(cfg.map_panel_width)
-            if panel_h > display_frame.shape[0] - 40:
-                panel_h = display_frame.shape[0] // 3
-                panel_w = int(panel_h * panel.shape[1] / max(panel.shape[0], 1))
-            panel_resized = cv2.resize(panel, (max(panel_w, 1), max(panel_h, 1)))
-            margin = 20
-            y0 = max(display_frame.shape[0] - panel_resized.shape[0] - margin, 0)
-            x0 = max(display_frame.shape[1] - panel_resized.shape[1] - margin, 0)
-            y1 = y0 + panel_resized.shape[0]
-            x1 = x0 + panel_resized.shape[1]
-            display_frame[y0:y1, x0:x1] = panel_resized
-            cv2.rectangle(display_frame, (x0 - 2, y0 - 2), (x1 + 2, y1 + 2), (50, 50, 50), 2)
-            cv2.putText(
-                display_frame,
-                "MAP",
-                (x0, max(y0 - 8, 10)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
-        removed_tracks = getattr(tracker, "removed_stracks", [])
-        for rem in removed_tracks:
-            rid = getattr(rem, "id", None)
-            if rid is not None:
-                global_id_manager.mark_lost(cfg.camera_id, int(rid))
 
         # === Hiển thị FPS hiện tại & FPS trung bình
         info_text = f"Frame: {frame_idx} | FPS: {fps_real:.2f}"

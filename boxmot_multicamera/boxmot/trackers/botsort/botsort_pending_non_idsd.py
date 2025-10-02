@@ -375,19 +375,16 @@ class BotSort(BaseTracker):
         return ctx
     
     def _update_coexistence_simple(self, tracks):
-        """Optimized coexistence tracking."""
+        """Record all pairs of IDs that coexist in current frame."""
         try:
-            # Filter once instead of in loop
             live = [t for t in tracks if t.state == TrackState.Tracked]
             live_ids = [int(t.id) for t in live]
             n = len(live_ids)
-            
-            # Pre-allocate sets
+
             for ida in live_ids:
                 if ida not in self.coex_map:
                     self.coex_map[ida] = set()
-            
-            # Single loop for all pairs
+
             for i in range(n):
                 ida = live_ids[i]
                 for j in range(i + 1, n):
@@ -397,22 +394,10 @@ class BotSort(BaseTracker):
                         self.coex_map[idb].add(ida)
         except Exception as e:
             print(f"Error in coexistence update: {e}")
-                
+
     def _purge_from_coex(self, ids):
-        """Remove all traces of given ids from coexistence map."""
-        if ids is None:
-            return
-        try:
-            for tid in list(ids):
-                tid = int(tid)
-                peers = self.coex_map.pop(tid, None)
-                if peers:
-                    for p in list(peers):
-                        s = self.coex_map.get(int(p))
-                        if s is not None:
-                            s.discard(tid)
-        except Exception as e:
-            print(f"Error purging coexistence: {e}")
+        """Coexistence tracking disabled."""
+        return
     
     def _bank_vectors_for_track(self, track):
         """Lấy toàn bộ vectors V (N_i, D) từ bank cho track.id, có cache ngắn theo frame."""
@@ -531,13 +516,6 @@ class BotSort(BaseTracker):
                     print(f"[DBG][frame={self.frame_count}] single->lost: single_id={curr_id} costs=[{costs_str}] min={best_cost:.3f} argmin={best_idx} thr={thr:.3f}", flush=True)
                 except Exception:
                     pass
-
-            # Gate theo coexistence
-            coex_block = self.coex_map.get(curr_id, set())
-            for j, lt in enumerate(lost_pool):
-                lid = int(getattr(lt, "id", -1))
-                if lid in coex_block:
-                    C[j] = 1.0
 
             # Top-1 sau gate
             jbest = int(np.argmin(C)) if C.size else -1
@@ -1204,11 +1182,11 @@ class BotSort(BaseTracker):
                         self._bank_add_feature(new_track, feat_for_strack)
                         continue
 
-                    # ID Fragment Resolution
-                    canonical_id, merge_ids = self.pending_manager.resolve_id_fragments(
+                    # Choose the best lost track candidate (no merge)
+                    canonical_id, _ = self.pending_manager.resolve_id_fragments(
                         cand_ids, lost_map, p_track, self.frame_count
                     )
-                
+
                     if canonical_id is None:
                         # Cannot resolve - create new track
                         feat_for_strack = (
@@ -1224,22 +1202,10 @@ class BotSort(BaseTracker):
                         self._bank_add_feature(new_track, feat_for_strack)
                         continue
 
-                    # 3. Coexistence filtering for canonical_id
-                    coex = self.coex_map
-                    coex_set = coex.get(int(canonical_id), set())
-                    
-                    # chỉ lọc các merge_ids bị xung đột với canonical
-                    safe_merge_ids   = [mid for mid in merge_ids if mid not in coex_set]
-                    conflict_ids     = [mid for mid in merge_ids if mid in coex_set]
-
-                    # luôn re-activate canonical_id
-                    root_trk = lost_map[canonical_id]
+                    # Reactivate the best matching lost track
+                    root_trk = lost_map.pop(canonical_id)
                     root_trk.re_activate(p_track, self.frame_count, new_id=False, img=img)
                     refind_stracks.append(root_trk)
-                    del lost_map[canonical_id]
-
-                    # (tuỳ chọn) log cho dễ debug
-                    print(f"[PROMOTE] canonical={canonical_id}, merge={safe_merge_ids}, filtered_by_coex={conflict_ids}")
 
                     # --- push 1 vector vào bank như cũ ---
                     try:
@@ -1255,38 +1221,6 @@ class BotSort(BaseTracker):
                     except Exception as e:
                         print(f"[LongBank] post-reactivate push failed for id={getattr(root_trk,'id',-1)}: {e}")
 
-                    # chỉ merge các ID không xung đột
-                    for merge_id in safe_merge_ids:
-                        if merge_id in lost_map:
-                            merge_track = lost_map[merge_id]
-                            # merge feature histories (như code cũ)
-                            merge_long     = getattr(merge_track, "long_feat_mean", None)
-                            canonical_long = getattr(root_trk,  "long_feat_mean", None)
-                            if merge_long is not None:
-                                if canonical_long is None:
-                                    root_trk.long_feat_mean = merge_long.copy()
-                                else:
-                                    weight = 0.3
-                                    root_trk.long_feat_mean = (1 - weight) * canonical_long + weight * merge_long
-                                    nrm = np.linalg.norm(root_trk.long_feat_mean)
-                                    if nrm > 1e-6:
-                                        root_trk.long_feat_mean /= nrm
-
-                            self.lost_stracks = [t for t in self.lost_stracks if t.id != merge_id]
-                            del lost_map[merge_id]
-                            self._purge_from_coex([merge_id])
-                            
-                            if self.long_bank is not None:
-                                try:
-                                    self.long_bank.delete_track(self.run_uid, int(merge_id))
-                                except Exception as e:
-                                    print(f"[LongBank] delete merge id = {merge_id} failed: {e}")
-                                
-                            # dọn cache cục bộ
-                            self._slot_pos.pop(int(merge_id), None)
-                            self._bank_proto_cache.pop(int(merge_id), None)
-                            self._frame_cache_bank.pop(int(merge_id), None)
-                                
                 except Exception as e:
                     print(f"Error promoting pending track: {e}")
                     continue
