@@ -83,7 +83,7 @@ class PendingTrack(BaseTrack):
         self.first_image  = None
         self.latest_image = None
         
-        self.cand_lost = {} # Store candidate lost tracks
+        self.cand_lost = {} # Store priority lost tracks
         
     def activate(self, kalman_filter):
         """Activate the pending track with Kalman filter."""
@@ -165,17 +165,26 @@ class PendingTrack(BaseTrack):
 
 class PendingManager:
     def __init__(self, kalman_filter, promotion_deadline=15,
-                 iou_thresh=0.7, appearance_thresh=0.1, match_thresh=0.8, use_dynamic_weights=True,
+                 iou_thresh=None, appearance_thresh=0.1, match_thresh=0.8, use_dynamic_weights=True,
                 w_motion_base=0.6, w_motion_start_dw=0.6, dw_start_frames=20, dw_step_frames=20,
                 dw_step_delta=0.05, reid_dim=None, dw_app_split=0.5, promote_min_frames_for_lost=5, 
                 proto_provider=None, vectors_provider=None, long_bank_topk=5, debug_pending_lost=False,
-                qdrant_group_provider=None):
+                qdrant_group_provider=None, lost_topk=5, lost_replace_margin=0.05, lost_stale_ttl=15):
         self.pending_tracks = []
         self.kalman_filter  = kalman_filter
         self.promotion_deadline = promotion_deadline
-        self.iou_thresh         = iou_thresh
-        self.appearance_thresh  = appearance_thresh
-        self.match_thresh       = match_thresh
+        # Primary match threshold
+        self.match_thresh       = float(match_thresh)
+
+        if iou_thresh is None:
+            try:
+                self.iou_thresh = min(1.0, max(0.0, float(self.match_thresh) + 0.075))
+            except Exception:
+                self.iou_thresh = 0.8
+        else:
+            self.iou_thresh = float(iou_thresh)
+
+        self.appearance_thresh  = float(appearance_thresh)
         
         # Dynamic weights parameters
         self.use_dynamic_weights = use_dynamic_weights
@@ -190,14 +199,17 @@ class PendingManager:
         self.proto_provider      = proto_provider
         self.vectors_provider    = vectors_provider
         self.long_bank_topk      = int(long_bank_topk)
-        
+
         self.debug_pending_lost  = bool(debug_pending_lost)
         self.debug_pending_lost  = True
-        
+
         # New: Use qdrant server
         self.qdrant_group_provider = qdrant_group_provider 
         self.run_uid               = None  # sẽ được gán từ BotSort
-        
+        self.lost_topk = max(1, int(lost_topk))
+        self.lost_replace_margin = float(lost_replace_margin)
+        self.lost_stale_ttl = max(1, int(lost_stale_ttl))
+
         self._norm_cache = {"frame": -1, "store": {}}
         
     # ============ LOG HELPERS ============
@@ -518,24 +530,20 @@ class PendingManager:
             except Exception as e:
                 print(f"Error in pending-detection matching: {e}")
 
-        # 2) Pending vs Lost Tracks matching (accumulation only)
+        # 2) Pending vs Lost Tracks matching (build priority candidates)
         if lost_tracks:
             try:
-                lost_boxes    = np.array([t.xyxy for t in lost_tracks], dtype=np.float32)
-                
+                lost_boxes = np.array([t.xyxy for t in lost_tracks], dtype=np.float32)
+
                 iou_cost = self._iou_cost(pending_boxes, lost_boxes)
-                
+
                 if with_reid:
-                    # Pending feature (ưu tiên smooth)
                     pend_feat_list = [
                         (p.smooth_feat if p.smooth_feat is not None else p.curr_feat)
                         for p in self.pending_tracks
                     ]
-                    # Long-term top-k pooling cost
                     cost_l = self._long_cost_topk_pending_lost(pend_feat_list, lost_tracks, feat_dim)
-
-                    # Gate theo appearance_thresh (mặc định 0.1)
-                    bad_l = (cost_l > float(self.appearance_thresh))
+                    bad_l  = (cost_l > float(self.appearance_thresh))
                     cost_l = np.where(bad_l, 1.0, cost_l).astype(np.float32, copy=False)
                 else:
                     cost_l = np.ones_like(iou_cost, dtype=np.float32)
@@ -543,8 +551,7 @@ class PendingManager:
                 cost_l   = np.nan_to_num(cost_l, nan=1.0, posinf=1.0, neginf=1.0)
                 iou_cost = np.nan_to_num(iou_cost, nan=1.0, posinf=1.0, neginf=1.0)
 
-                # Dynamic weights (giữ nguyên logic cũ)
-                use_dw      = bool(self.use_dynamic_weights)
+                use_dw = bool(self.use_dynamic_weights)
                 base_motion = self.w_motion_start_dw if use_dw else self.w_motion_base
 
                 M, N = iou_cost.shape
@@ -563,81 +570,97 @@ class PendingManager:
                 cost_matrix = (Wm * iou_cost + Wa * cost_l).astype(np.float32)
                 cost_matrix = np.nan_to_num(cost_matrix, nan=1.0, posinf=1.0, neginf=1.0)
 
-                # --- LOG ma trận trước khi accumulate
                 if self.debug_pending_lost:
-                    self._log_pl(f"[PL][frame={frame_id}] cost_matrix shape={cost_matrix.shape}, "
-                                 f"thr={self.match_thresh:.3f}")
-                    self._log_pl(f"  IoU cost stats: min={float(np.min(iou_cost)):.3f}, "
-                                 f"max={float(np.max(iou_cost)):.3f}")
-                    self._log_pl(f"  ReID cost stats: min={float(np.min(cost_l)):.3f}, "
-                                 f"max={float(np.max(cost_l)):.3f}")
-                    self._log_pl(f"  Mix cost stats:  min={float(np.min(cost_matrix)):.3f}, "
-                                 f"max={float(np.max(cost_matrix)):.3f}")
-                    
-                # Nhiều-nhiều (accumulation)
-                thr = float(self.match_thresh)
-                pairs = [(ip, jl)
-                         for ip in range(M)
-                         for jl in range(N)
-                         if cost_matrix[ip, jl] <= thr]
+                    self._log_pl(
+                        f"[PL][frame={frame_id}] cost_matrix shape={cost_matrix.shape}, thr={self.match_thresh:.3f}"
+                    )
 
-                # --- LOG danh sách cặp tích lũy ---
-                self._log_assignment_results("PL", pairs, cost_matrix, frame_id)
-                
-                if self.debug_pending_lost:
+                lost_ids = [int(getattr(t, "id", -1)) for t in lost_tracks]
+                valid_lost_ids = {lid for lid in lost_ids if lid >= 0}
+
+                for pending in self.pending_tracks:
                     try:
-                        # gom các cặp theo pending index
-                        by_pend = {}
-                        for (ip, jl) in pairs:
-                            lost_id = getattr(lost_tracks[jl], "id", None)
-                            by_pend.setdefault(ip, []).append((jl, lost_id))
+                        if not pending.cand_lost:
+                            continue
+                        drop_ids = [lid for lid in pending.cand_lost if lid not in valid_lost_ids]
+                        for lid in drop_ids:
+                            pending.cand_lost.pop(lid, None)
+                    except Exception:
+                        pass
 
-                        # in cho từng pending
-                        for ip, items in by_pend.items():
-                            p = self.pending_tracks[ip]
-                            pid = getattr(p, "det_ind", -1)
-                            ptag = f"pend[{ip}] det_ind={pid}"
+                TOPK_IOU = 3
+                TOPK_APP = 3
+                MAX_CAND = 3
 
-                            details = []
-                            for jl, lost_id in items:
-                                mix = float(cost_matrix[ip, jl])
-                                iou = float(iou_cost[ip, jl])
-                                # cost_l là ReID long-topk khi with_reid=True, nếu không thì NaN
-                                reid = float(cost_l[ip, jl]) if with_reid else float("nan")
-                                wm = float(Wm[ip, jl])
-                                wa = float(Wa[ip, jl])
-                                details.append(
-                                    f"lost_id={lost_id} mix={mix:.3f} (IoU={iou:.3f}, ReID={reid:.3f}, Wm={wm:.2f}, Wa={wa:.2f})"
-                                )
-
-                            if details:
-                                self._log_pl(f"[PL][frame={frame_id}] {ptag} -> " + "; ".join(details))
-                            else:
-                                self._log_pl(f"[PL][frame={frame_id}] {ptag} -> (no matches ≤ thr)")
-                    except Exception as e:
-                        print(f"Error logging per-pending matches: {e}")
-
-                for ipend, ilost in pairs:
-                    try:
-                        pending = self.pending_tracks[ipend]
-                        lost    = lost_tracks[ilost]
-                        
-                        # dùng MIX COST để ghi nhận (đã qua thr vì nằm trong 'pairs')
-                        mix_cost = float(cost_matrix[ipend, ilost])
-                        
-                        st = pending.cand_lost.get(lost.id)
-                        if st is None:
-                            st = {"frames": 0, "last_seen": frame_id, "best": 1.0, "avg": 0.0}
-                            pending.cand_lost[lost.id] = st
-                            
-                        st["frames"]    += 1
-                        st["last_seen"]  = frame_id
-                        # cập nhật best/avg để debug dùng về sau
-                        st["best"] = min(st["best"], mix_cost)
-                        st["avg"]  = st["avg"] + (mix_cost - st["avg"]) / st["frames"]
-                    except Exception as e:
-                        print(f"Error accumulating lost match: {e}")
+                for ip in range(M):
+                    pending = self.pending_tracks[ip]
+                    if N == 0:
                         continue
+
+                    iou_row = iou_cost[ip]
+                    order_iou = np.argsort(iou_row)
+                    top_iou_idx = order_iou[:min(TOPK_IOU, order_iou.size)]
+
+                    candidate_idx = set(int(idx) for idx in top_iou_idx)
+
+                    if with_reid and cost_l.size:
+                        app_row = cost_l[ip]
+                        order_app = np.argsort(app_row)
+                        top_app_idx = order_app[:min(TOPK_APP, order_app.size)]
+                        candidate_idx.update(int(idx) for idx in top_app_idx)
+
+                    if not candidate_idx:
+                        continue
+
+                    for jl in sorted(candidate_idx):
+                        if jl < 0 or jl >= N:
+                            continue
+                        lost_id = lost_ids[jl]
+                        if lost_id < 0:
+                            continue
+
+                        mix_cost = float(cost_matrix[ip, jl])
+                        if mix_cost > float(self.match_thresh):
+                            continue
+
+                        stats_map = pending.cand_lost
+                        if stats_map is None:
+                            stats_map = {}
+                            pending.cand_lost = stats_map
+
+                        stats = stats_map.get(lost_id)
+                        if stats is None:
+                            if len(stats_map) >= MAX_CAND:
+                                worst_id = max(
+                                    stats_map.items(),
+                                    key=lambda item: float(item[1].get("best", 1.0)),
+                                )[0]
+                                worst_best = float(stats_map[worst_id].get("best", 1.0))
+                                if mix_cost >= worst_best:
+                                    continue
+                                stats_map.pop(worst_id, None)
+
+                            stats = {
+                                "frames": 0,
+                                "best": 1.0,
+                                "avg": mix_cost,
+                                "last": mix_cost,
+                                "last_frame": frame_id,
+                            }
+                            stats_map[lost_id] = stats
+
+                        stats["frames"] = int(stats.get("frames", 0)) + 1
+                        stats["best"] = min(float(stats.get("best", 1.0)), mix_cost)
+                        prev_avg = float(stats.get("avg", mix_cost))
+                        stats["avg"] = prev_avg + (mix_cost - prev_avg) / stats["frames"]
+                        stats["last"] = mix_cost
+                        stats["last_frame"] = frame_id
+
+                        if self.debug_pending_lost:
+                            self._log_pl(
+                                f"[PL][frame={frame_id}] pend_id={getattr(pending, 'det_ind', -1)} "
+                                f"lost_id={lost_id} mix={mix_cost:.3f} best={stats['best']:.3f} avg={stats['avg']:.3f}"
+                            )
 
             except Exception as e:
                 print(f"Error in pending-lost matching: {e}")

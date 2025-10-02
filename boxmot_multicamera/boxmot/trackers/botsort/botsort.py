@@ -166,8 +166,8 @@ class BotSort(BaseTracker):
         self.pending_manager = PendingManager(
             kalman_filter              =self.kalman_filter,
             promotion_deadline         =15,
-            iou_thresh                 =0.7,
-            appearance_thresh          =0.10,
+            iou_thresh                 =0.85,
+            appearance_thresh          =0.13,
             match_thresh               =0.7,
             use_dynamic_weights        =self.use_dynamic_weights,
             w_motion_base              =self.w_motion_base,

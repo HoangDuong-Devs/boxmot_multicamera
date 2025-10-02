@@ -351,7 +351,7 @@ def run_tracking(cfg: TrackingConfig) -> None:
                     global_ids=global_id_map,
                 )
 
-                active_ids = {int(d[4]) for d in outputs}   # cột 4 là track id trong outputs
+                active_ids = {int(d[4]) for d in outputs} 
                 for t in tracks_for_visual:
                     t_id = int(t["id"])
                     t["is_lost"] = t_id not in active_ids
